@@ -1,0 +1,5 @@
+{
+    "upcoming": "https://myanimelist.net/topanime.php?type=upcoming",
+    "favorite": "https://myanimelist.net/topanime.php?type=favorite",
+    "airing": "https://myanimelist.net/topanime.php?type=airing"
+}
