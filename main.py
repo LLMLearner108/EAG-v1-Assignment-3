@@ -9,9 +9,17 @@ import re
 from typing import List, Dict, Optional
 from pydantic import BaseModel, Field
 from urllib.parse import urljoin
+import requests
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 # Load environment variables
 load_dotenv()
+
+# Load email configuration
+with open('smtp.config', 'r') as f:
+    email_config = json.load(f)
 
 # Configure Gemini API
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -35,6 +43,45 @@ class AnimeList(BaseModel):
 class FilterRequest(BaseModel):
     anime_data: AnimeList
     min_score: Optional[float] = None
+
+class EmailRequest(BaseModel):
+    recipient_email: Optional[str] = None
+    subject: Optional[str] = "Your Filtered Anime List"
+
+def send_email(recipient_email: str, subject: str, anime_list: List[Dict]) -> bool:
+    """Send email using SMTP."""
+    try:
+        # Create message
+        msg = MIMEMultipart()
+        msg['From'] = email_config['sender_email']
+        msg['To'] = recipient_email
+        msg['Subject'] = subject
+
+        # Create email body
+        body = f"""
+        Here's your filtered anime list with {len(anime_list)} entries:
+
+        {chr(10).join(f"{anime['title']} - Score: {anime['score']}" for anime in anime_list)}
+
+        Best regards,
+        Your Anime List Service
+        """
+
+        msg.attach(MIMEText(body, 'plain'))
+
+        # Create SMTP session
+        server = smtplib.SMTP(email_config['smtp_server'], email_config['smtp_port'])
+        server.starttls()
+        server.login(email_config['sender_email'], email_config['sender_password'])
+
+        # Send email
+        server.send_message(msg)
+        server.quit()
+
+        return True
+    except Exception as e:
+        print(f"Error sending email: {str(e)}")
+        return False
 
 def get_all_pages_content(base_url: str) -> str:
     """Get content from all pages of the anime list."""
@@ -144,6 +191,39 @@ async def filter_anime_by_score(request: FilterRequest):
         raise HTTPException(status_code=400, detail="Invalid score format in anime data")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error filtering anime: {str(e)}")
+
+@app.post("/send-email")
+async def send_anime_email(filtered_data: dict, email_request: EmailRequest):
+    try:
+        # Get the filtered anime list
+        anime_list = filtered_data.get("filtered_anime_list", [])
+        if not anime_list:
+            raise HTTPException(status_code=400, detail="No anime data to send")
+
+        # Get recipient email
+        recipient_email = email_request.recipient_email or email_config["default_recipient"]
+
+        # Send email
+        success = send_email(
+            recipient_email=recipient_email,
+            subject=email_request.subject,
+            anime_list=anime_list  # Pass the list directly without JSON conversion
+        )
+
+        if success:
+            return {
+                "message": "Email sent successfully",
+                "recipient": recipient_email,
+                "anime_count": len(anime_list)
+            }
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to send email. Please check the server logs for details."
+            )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error sending email: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
