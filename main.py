@@ -8,6 +8,7 @@ import google.generativeai as genai
 import re
 from typing import List, Dict, Optional
 from pydantic import BaseModel, Field
+from urllib.parse import urljoin
 
 # Load environment variables
 load_dotenv()
@@ -15,7 +16,7 @@ load_dotenv()
 # Configure Gemini API
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-2.0-flash')
+model = genai.GenerativeModel(os.getenv("MODEL_NAME"))
 
 app = FastAPI()
 
@@ -35,6 +36,32 @@ class FilterRequest(BaseModel):
     anime_data: AnimeList
     min_score: Optional[float] = None
 
+def get_all_pages_content(base_url: str) -> str:
+    """Get content from all pages of the anime list."""
+    all_content = []
+    current_url = base_url
+    
+    while current_url:
+        try:
+            response = requests.get(current_url)
+            response.raise_for_status()
+            all_content.append(response.text)
+            
+            # Parse the HTML to find the next page link
+            soup = BeautifulSoup(response.text, 'html.parser')
+            next_link = soup.find('link', {'rel': 'next'})
+            
+            if next_link and 'href' in next_link.attrs:
+                current_url = urljoin(base_url, next_link['href'])
+            else:
+                current_url = None
+                
+        except requests.RequestException as e:
+            print(f"Error fetching page {current_url}: {str(e)}")
+            break
+            
+    return "\n".join(all_content)
+
 @app.get("/scrape/{key}")
 async def scrape_anime_page(key: str):
     if key not in anime_map:
@@ -42,10 +69,10 @@ async def scrape_anime_page(key: str):
     
     url = anime_map[key]
     try:
-        response = requests.get(url)
-        response.raise_for_status()
-        return {"content": response.text}
-    except requests.RequestException as e:
+        # Get content from all pages
+        content = get_all_pages_content(url)
+        return {"content": content}
+    except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching data: {str(e)}")
 
 @app.post("/extract")
@@ -56,23 +83,23 @@ async def extract_anime_info(content: dict):
     html_content = content["content"]
     soup = BeautifulSoup(html_content, 'html.parser')
     
-    # Extract the table content
-    table = soup.find('table', {'class': 'top-ranking-table'})
-    if not table:
-        raise HTTPException(status_code=404, detail="No anime table found in the content")
+    # Extract all table contents
+    tables = soup.find_all('table', {'class': 'top-ranking-table'})
+    if not tables:
+        raise HTTPException(status_code=404, detail="No anime tables found in the content")
     
-    # Convert table to text for Gemini
-    table_text = table.get_text()
+    # Combine all table texts
+    all_table_text = "\n".join(table.get_text() for table in tables)
     
     # Create prompt for Gemini
     prompt = f"""Extract anime titles and their scores from the following table content. 
     Format the response as a JSON array of objects with 'title' and 'score' keys.
-    Only include the top 10 entries.
+    Include all entries from all tables.
     Return ONLY the JSON array, no markdown formatting or additional text.
     The score should be a number, not a string.
     
     Table content:
-    {table_text}
+    {all_table_text}
     """
     
     try:
