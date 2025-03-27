@@ -5,6 +5,9 @@ import json
 import os
 from dotenv import load_dotenv
 import google.generativeai as genai
+import re
+from typing import List, Dict, Optional
+from pydantic import BaseModel, Field
 
 # Load environment variables
 load_dotenv()
@@ -19,6 +22,18 @@ app = FastAPI()
 # Load anime map
 with open('anime_map.json', 'r') as f:
     anime_map = json.load(f)
+
+# Pydantic models for request/response validation
+class Anime(BaseModel):
+    title: str
+    score: float
+
+class AnimeList(BaseModel):
+    anime_list: List[Anime]
+
+class FilterRequest(BaseModel):
+    anime_data: AnimeList
+    min_score: Optional[float] = None
 
 @app.get("/scrape/{key}")
 async def scrape_anime_page(key: str):
@@ -43,7 +58,6 @@ async def extract_anime_info(content: dict):
     
     # Extract the table content
     table = soup.find('table', {'class': 'top-ranking-table'})
-
     if not table:
         raise HTTPException(status_code=404, detail="No anime table found in the content")
     
@@ -54,6 +68,8 @@ async def extract_anime_info(content: dict):
     prompt = f"""Extract anime titles and their scores from the following table content. 
     Format the response as a JSON array of objects with 'title' and 'score' keys.
     Only include the top 10 entries.
+    Return ONLY the JSON array, no markdown formatting or additional text.
+    The score should be a number, not a string.
     
     Table content:
     {table_text}
@@ -61,11 +77,46 @@ async def extract_anime_info(content: dict):
     
     try:
         response = model.generate_content(prompt)
-        # Parse the response as JSON
-        anime_data = json.loads(response.text)
+        # Clean the response text
+        response_text = response.text.strip()
+        # Remove markdown code block markers if present
+        response_text = re.sub(r'```json\s*|\s*```', '', response_text)
+        # Remove any leading/trailing whitespace and newlines
+        response_text = response_text.strip()
+        
+        # Parse the cleaned response as JSON
+        anime_data = json.loads(response_text)
         return {"anime_list": anime_data}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing with Gemini: {str(e)}")
+
+@app.post("/filter")
+async def filter_anime_by_score(request: FilterRequest):
+    try:
+        if request.min_score is None:
+            return {
+                "filtered_anime_list": request.anime_data.anime_list,
+                "min_score": None,
+                "total_anime": len(request.anime_data.anime_list),
+                "filtered_count": len(request.anime_data.anime_list)
+            }
+            
+        # Filter anime with scores above the threshold
+        filtered_anime = [
+            anime for anime in request.anime_data.anime_list
+            if anime.score >= request.min_score
+        ]
+        
+        return {
+            "filtered_anime_list": filtered_anime,
+            "min_score": request.min_score,
+            "total_anime": len(request.anime_data.anime_list),
+            "filtered_count": len(filtered_anime)
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="Invalid score format in anime data")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error filtering anime: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
