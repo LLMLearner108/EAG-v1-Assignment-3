@@ -361,12 +361,12 @@ async def hinata_agent(request: AgentRequest):
             filter_response = await filter_anime_by_score(filter_request)
             filtered_anime = filter_response["filtered_anime_list"]
             
-            # Send email
+            # Send email using the endpoint
             email_request = EmailRequest(
                 recipient_email=request.recipient_email,
                 subject=f"Anime List (Score >= {request.min_score})"
             )
-            await send_anime_email({"filtered_anime_list": filtered_anime}, email_request)
+            email_response = await send_anime_email({"filtered_anime_list": filtered_anime}, email_request)
             result = filtered_anime
             log_detailed("Email task complete", f"Sent {len(result)} anime to {request.recipient_email}")
             
