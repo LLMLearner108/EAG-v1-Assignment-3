@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Hinata Anime Agent</title>
+  <style>
+    body {
+      width: 400px;
+      padding: 20px;
+      font-family: Arial, sans-serif;
+    }
+    .container {
+      display: flex;
+      flex-direction: column;
+      gap: 15px;
+    }
+    .input-group {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+    select, input, button {
+      padding: 8px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+    }
+    button {
+      background-color: #4CAF50;
+      color: white;
+      border: none;
+      cursor: pointer;
+      padding: 10px;
+    }
+    button:hover {
+      background-color: #45a049;
+    }
+    button:disabled {
+      background-color: #cccccc;
+      cursor: not-allowed;
+    }
+    #result {
+      margin-top: 15px;
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      max-height: 300px;
+      overflow-y: auto;
+    }
+    .anime-item {
+      padding: 8px;
+      border-bottom: 1px solid #eee;
+    }
+    .anime-item:last-child {
+      border-bottom: none;
+    }
+    .loading {
+      display: none;
+      text-align: center;
+      margin: 10px 0;
+    }
+    .error {
+      color: red;
+      margin-top: 10px;
+    }
+  </style>
+</head>
+<body>
+  <h2>Hinata Anime Agent</h2>
+  <div class="container">
+    <div class="input-group">
+      <label for="query">Select Category:</label>
+      <select id="query">
+        <option value="upcoming">Upcoming</option>
+        <option value="favorite">Favorite</option>
+        <option value="airing">Airing</option>
+      </select>
+    </div>
+
+    <div class="input-group">
+      <label for="taskType">Select Task:</label>
+      <select id="taskType">
+        <option value="top_k">Get Top K Anime</option>
+        <option value="score_filter">Filter by Score</option>
+        <option value="email">Send to Email</option>
+      </select>
+    </div>
+
+    <div id="topKInput" class="input-group">
+      <label for="topK">Number of Top Anime:</label>
+      <input type="number" id="topK" min="1" value="10">
+    </div>
+
+    <div id="scoreInput" class="input-group">
+      <label for="minScore">Minimum Score:</label>
+      <input type="number" id="minScore" min="0" max="10" step="0.1" value="8.0">
+    </div>
+
+    <div id="emailInput" class="input-group">
+      <label for="recipientEmail">Recipient Email:</label>
+      <input type="email" id="recipientEmail" placeholder="example@email.com">
+    </div>
+
+    <button id="submitBtn">Submit</button>
+    <div id="loading" class="loading">Processing...</div>
+    <div id="error" class="error"></div>
+    <div id="result"></div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html> 
