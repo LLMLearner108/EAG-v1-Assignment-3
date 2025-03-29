@@ -315,72 +315,270 @@ async def send_anime_email(filtered_data: dict, email_request: EmailRequest):
         log_detailed("Email sending failed", str(e))
         raise HTTPException(status_code=500, detail=f"Error sending email: {str(e)}")
 
+# Add these functions at the top level, after the imports
+async def function_caller(func_name: str, params: dict, last_response: dict = None) -> dict:
+    """Execute API endpoint based on function name and parameters"""
+    function_map = {
+        "scrape_anime_page": scrape_anime_page,
+        "extract_anime_info": extract_anime_info,
+        "filter_anime_by_score": filter_anime_by_score,
+        "send_anime_email": send_anime_email
+    }
+    
+    if func_name in function_map:
+        try:
+            # Special handling for extract_anime_info
+            if func_name == "extract_anime_info" and last_response and "content" in last_response:
+                params = {"content": last_response}
+            
+            # Convert params to appropriate Pydantic models if needed
+            if func_name == "filter_anime_by_score":
+                # Ensure anime_list exists and has the correct structure
+                if "request" not in params or "anime_data" not in params["request"]:
+                    raise ValueError("Missing required fields in filter_anime_by_score parameters")
+                
+                anime_data = params["request"]["anime_data"]
+                if "anime_list" not in anime_data:
+                    raise ValueError("Missing anime_list in anime_data")
+                
+                # Convert each anime entry to Anime model
+                anime_list = [Anime(**anime) for anime in anime_data["anime_list"]]
+                
+                params = {
+                    "request": FilterRequest(
+                        anime_data=AnimeList(anime_list=anime_list),
+                        min_score=params["request"].get("min_score")
+                    )
+                }
+            elif func_name == "send_anime_email":
+                if "filtered_data" not in params or "email_request" not in params:
+                    raise ValueError("Missing required fields in send_anime_email parameters")
+                
+                # Ensure filtered_data has the correct structure
+                if "filtered_anime_list" not in params["filtered_data"]:
+                    raise ValueError("Missing filtered_anime_list in filtered_data")
+                
+                # Convert each anime entry to Anime model
+                anime_list = [Anime(**anime) for anime in params["filtered_data"]["filtered_anime_list"]]
+                
+                params = {
+                    "filtered_data": {"filtered_anime_list": anime_list},
+                    "email_request": EmailRequest(**params["email_request"])
+                }
+            
+            return await function_map[func_name](**params)
+        except Exception as e:
+            raise ValueError(f"Error preparing parameters for {func_name}: {str(e)}")
+    else:
+        raise ValueError(f"Function {func_name} not found")
+
 @app.post("/agent")
 async def hinata_agent(request: AgentRequest):
     log_detailed("Agent started", f"Task type: {request.task_type}, Query: {request.query}")
     
+    # System prompt that defines the available functions and their purposes with exact schema requirements
+    system_prompt = """You are an agent that can perform tasks by calling available API endpoints.
+    Respond with EXACTLY ONE of these formats:
+    1. FUNCTION_CALL: function_name|params
+    2. FINAL_ANSWER: result
+
+    IMPORTANT JSON FORMATTING RULES:
+    1. Use double quotes for all strings, not single quotes
+    2. Use commas to separate array elements and object properties
+    3. Do not include trailing commas
+    4. Use proper JSON number format (no leading zeros)
+    5. Escape special characters in strings
+    6. Do not include any comments or explanations in the JSON
+
+    Available functions with their exact parameter schemas:
+
+    1. scrape_anime_page(key: str)
+       Example: FUNCTION_CALL: scrape_anime_page|{"key": "upcoming"}
+
+    2. extract_anime_info(content: dict)
+       IMPORTANT: For this function, you can simply return FUNCTION_CALL: extract_anime_info|{}
+       The system will automatically use the content from the previous scrape_anime_page call.
+       No need to provide any parameters.
+
+    3. filter_anime_by_score(request: dict)
+       Schema:
+       {
+         "request": {
+           "anime_data": {
+             "anime_list": [
+               {"title": "string", "score": number}
+             ]
+           },
+           "min_score": number
+         }
+       }
+       Example: FUNCTION_CALL: filter_anime_by_score|{"request": {"anime_data": {"anime_list": [{"title": "Anime 1", "score": 8.5}]}, "min_score": 8.0}}
+
+    4. send_anime_email(filtered_data: dict, email_request: dict)
+       Schema:
+       {
+         "filtered_data": {
+           "filtered_anime_list": [
+             {"title": "string", "score": number}
+           ]
+         },
+         "email_request": {
+           "recipient_email": "string",
+           "subject": "string"
+         }
+       }
+       Example: FUNCTION_CALL: send_anime_email|{"filtered_data": {"filtered_anime_list": [{"title": "Anime 1", "score": 8.5}]}, "email_request": {"recipient_email": "user@example.com", "subject": "Your Anime List"}}
+
+    ANIME DATA EXTRACTION RULES:
+    1. Each anime entry must have exactly two fields: "title" and "score"
+    2. Title must be a string with double quotes
+    3. Score must be a number (float) without quotes
+    4. Example of valid anime entry: {"title": "Attack on Titan", "score": 8.5}
+    5. Example of invalid anime entry: {'title': 'Attack on Titan', 'score': '8.5'}
+
+    Rules:
+    1. Each function call must follow the exact schema shown above
+    2. All required fields must be present
+    3. Data types must match exactly (string, number)
+    4. Return ONLY the function call or final answer, no other text
+    5. Do not include any markdown formatting
+    6. Do not include any explanations or additional text
+    7. Ensure all JSON is properly formatted and parsable
+    8. For extract_anime_info, just return FUNCTION_CALL: extract_anime_info|{}
+    
+    After each function call, you'll receive the result and can decide the next step."""
+
+    max_iterations = 5
+    iteration = 0
+    last_response = None
+    iteration_response = []
+
     try:
-        # Step 1: Scrape the content
-        scrape_response = await scrape_anime_page(request.query)
-        log_detailed("Scraping complete", "Content fetched successfully")
-        
-        # Step 2: Extract anime info
-        extract_response = await extract_anime_info(scrape_response)
-        anime_list = extract_response["anime_list"]
-        log_detailed("Extraction complete", f"Found {len(anime_list)} anime entries")
-        
-        # Step 3: Process based on task type
-        if request.task_type == "top_k":
-            if not request.top_k:
-                raise HTTPException(status_code=400, detail="top_k parameter required for this task")
-            # Sort by score and get top k
-            sorted_anime = sorted(anime_list, key=lambda x: x["score"], reverse=True)
-            result = sorted_anime[:request.top_k]
-            log_detailed("Top K processing complete", f"Returned top {request.top_k} anime")
+        while iteration < max_iterations:
+            log_detailed(f"Agent iteration {iteration + 1}", "Processing")
             
-        elif request.task_type == "score_filter":
-            if not request.min_score:
-                raise HTTPException(status_code=400, detail="min_score parameter required for this task")
-            # Filter by score
-            filter_request = FilterRequest(
-                anime_data=AnimeList(anime_list=anime_list),
-                min_score=request.min_score
-            )
-            filter_response = await filter_anime_by_score(filter_request)
-            result = filter_response["filtered_anime_list"]
-            log_detailed("Score filtering complete", f"Found {len(result)} anime above score {request.min_score}")
+            # Construct the current query
+            if iteration == 0:
+                current_query = f"Task: {request.task_type}\nQuery: {request.query}\nParameters: top_k={request.top_k}, min_score={request.min_score}, recipient_email={request.recipient_email}"
+            else:
+                # Add more context about the last response
+                last_step = iteration_response[-1] if iteration_response else ""
+                current_query = f"""Task: {request.task_type}
+Query: {request.query}
+Parameters: top_k={request.top_k}, min_score={request.min_score}, recipient_email={request.recipient_email}
+
+Previous steps:
+{chr(10).join(iteration_response)}
+
+Based on the last response, you should:
+1. For top_k task: Call filter_anime_by_score with the anime_list from the last response
+2. For score_filter task: Call filter_anime_by_score with the anime_list from the last response
+3. For email task: Call filter_anime_by_score first, then send_anime_email with the filtered results
+
+What should be the next step?"""
+
+            # Get model's response
+            prompt = f"{system_prompt}\n\nQuery: {current_query}"
+            response = model.generate_content(prompt)
+            response_text = response.text.strip()
             
-        elif request.task_type == "email":
-            if not request.min_score or not request.recipient_email:
-                raise HTTPException(status_code=400, detail="min_score and recipient_email required for this task")
-            # Filter by score
-            filter_request = FilterRequest(
-                anime_data=AnimeList(anime_list=anime_list),
-                min_score=request.min_score
-            )
-            filter_response = await filter_anime_by_score(filter_request)
-            filtered_anime = filter_response["filtered_anime_list"]
+            log_detailed("LLM Response", response_text)
+
+            # Check if it's a function call
+            if response_text.startswith("FUNCTION_CALL:"):
+                try:
+                    _, function_info = response_text.split(":", 1)
+                    func_name, params = [x.strip() for x in function_info.split("|", 1)]
+                    
+                    # Clean the params string before parsing
+                    params = params.strip()
+                    if params.startswith("'") and params.endswith("'"):
+                        params = params[1:-1]  # Remove single quotes if present
+                    
+                    # Special handling for extract_anime_info
+                    if func_name == "extract_anime_info":
+                        params = "{}"  # Force empty object for extract_anime_info
+                    else:
+                        params = json.loads(params)
+                    
+                    # Execute the function
+                    result = await function_caller(func_name, params, last_response)
+                    
+                    # Record the iteration
+                    iteration_response.append(f"In iteration {iteration + 1}, called {func_name} with params {params} and got result {result}")
+                    
+                    # Check if we've completed the task
+                    if request.task_type == "top_k" and func_name == "filter_anime_by_score":
+                        if len(result["filtered_anime_list"]) <= (request.top_k or 0):
+                            return {
+                                "status": "success",
+                                "task_type": request.task_type,
+                                "result": result["filtered_anime_list"]
+                            }
+                    elif request.task_type == "score_filter" and func_name == "filter_anime_by_score":
+                        return {
+                            "status": "success",
+                            "task_type": request.task_type,
+                            "result": result["filtered_anime_list"]
+                        }
+                    elif request.task_type == "email" and func_name == "send_anime_email":
+                        return {
+                            "status": "success",
+                            "task_type": request.task_type,
+                            "result": result
+                        }
+                    
+                    last_response = result
+                    iteration += 1
+                    
+                except json.JSONDecodeError as e:
+                    raise ValueError(f"Invalid JSON in function call: {str(e)}\nResponse text: {response_text}")
+                except ValueError as e:
+                    raise ValueError(f"Invalid parameters: {str(e)}")
+                
+            # Check if it's the final answer
+            elif response_text.startswith("FINAL_ANSWER:"):
+                try:
+                    _, result = response_text.split(":", 1)
+                    return {
+                        "status": "success",
+                        "task_type": request.task_type,
+                        "result": json.loads(result)
+                    }
+                except json.JSONDecodeError as e:
+                    raise ValueError(f"Invalid JSON in final answer: {str(e)}")
             
-            # Send email using the endpoint
-            email_request = EmailRequest(
-                recipient_email=request.recipient_email,
-                subject=f"Anime List (Score >= {request.min_score})"
-            )
-            email_response = await send_anime_email({"filtered_anime_list": filtered_anime}, email_request)
-            result = filtered_anime
-            log_detailed("Email task complete", f"Sent {len(result)} anime to {request.recipient_email}")
-            
-        else:
-            log_detailed("Invalid task type", request.task_type)
-            raise HTTPException(status_code=400, detail="Invalid task type. Must be one of: top_k, score_filter, email")
-        
-        log_detailed("Agent task complete", f"Successfully processed {request.task_type} task")
-        return {
-            "status": "success",
-            "task_type": request.task_type,
-            "result": result
-        }
-        
+            else:
+                # If the response is empty or just whitespace, and we're calling extract_anime_info
+                if not response_text and last_response and "content" in last_response:
+                    func_name = "extract_anime_info"
+                    params = "{}"
+                    result = await function_caller(func_name, params, last_response)
+                    iteration_response.append(f"In iteration {iteration + 1}, called {func_name} with empty params and got result {result}")
+                    last_response = result
+                    iteration += 1
+                    continue
+                
+                # If we have anime_list in the last response, suggest the next step
+                if last_response and "anime_list" in last_response:
+                    if request.task_type == "top_k":
+                        return {
+                            "status": "success",
+                            "task_type": request.task_type,
+                            "result": last_response["anime_list"][:request.top_k]
+                        }
+                    elif request.task_type == "score_filter":
+                        return {
+                            "status": "success",
+                            "task_type": request.task_type,
+                            "result": last_response["anime_list"]
+                        }
+                
+                raise ValueError("Invalid response format from LLM")
+
+        # If we've reached max iterations without completing the task
+        raise HTTPException(status_code=500, detail="Task could not be completed within maximum iterations")
+
     except Exception as e:
         log_detailed("Agent task failed", str(e))
         raise HTTPException(status_code=500, detail=f"Agent task failed: {str(e)}")
