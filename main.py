@@ -133,7 +133,7 @@ def get_all_pages_content(base_url: str) -> str:
     current_url = base_url
     total_anime = 0
     
-    while current_url and total_anime < 250:
+    while current_url and total_anime < 100:
         try:
             log_detailed("Fetching page", current_url)
             response = requests.get(current_url)
@@ -149,7 +149,7 @@ def get_all_pages_content(base_url: str) -> str:
             
             next_link = soup.find('link', {'rel': 'next'})
             
-            if next_link and 'href' in next_link.attrs and total_anime < 250:
+            if next_link and 'href' in next_link.attrs and total_anime < 100:
                 current_url = urljoin(base_url, next_link['href'])
             else:
                 current_url = None
@@ -389,6 +389,9 @@ async def hinata_agent(request: AgentRequest):
     4. Use proper JSON number format (no leading zeros)
     5. Escape special characters in strings
     6. Do not include any comments or explanations in the JSON
+    7. For large arrays, use proper line breaks and indentation
+    8. Do not truncate or cut off JSON arrays
+    9. Ensure all JSON is complete and properly closed
 
     Available functions with their exact parameter schemas:
 
@@ -412,7 +415,19 @@ async def hinata_agent(request: AgentRequest):
            "min_score": number
          }
        }
-       Example: FUNCTION_CALL: filter_anime_by_score|{"request": {"anime_data": {"anime_list": [{"title": "Anime 1", "score": 8.5}]}, "min_score": 8.0}}
+       Example with multiple anime:
+       FUNCTION_CALL: filter_anime_by_score|{
+         "request": {
+           "anime_data": {
+             "anime_list": [
+               {"title": "Anime 1", "score": 8.5},
+               {"title": "Anime 2", "score": 7.8},
+               {"title": "Anime 3", "score": 9.0}
+             ]
+           },
+           "min_score": 8.0
+         }
+       }
 
     4. send_anime_email(filtered_data: dict, email_request: dict)
        Schema:
@@ -445,6 +460,8 @@ async def hinata_agent(request: AgentRequest):
     6. Do not include any explanations or additional text
     7. Ensure all JSON is properly formatted and parsable
     8. For extract_anime_info, just return FUNCTION_CALL: extract_anime_info|{}
+    9. For large lists, use proper formatting with line breaks and indentation
+    10. Never truncate or cut off JSON arrays
     
     After each function call, you'll receive the result and can decide the next step."""
 
@@ -475,6 +492,20 @@ Based on the last response, you should:
 2. For score_filter task: Call filter_anime_by_score with the anime_list from the last response
 3. For email task: Call filter_anime_by_score first, then send_anime_email with the filtered results
 
+IMPORTANT: When using filter_anime_by_score, ensure the JSON is properly formatted with line breaks and indentation for readability.
+Example format:
+{{
+  "request": {{
+    "anime_data": {{
+      "anime_list": [
+        {{"title": "Anime 1", "score": 8.5}},
+        {{"title": "Anime 2", "score": 7.8}}
+      ]
+    }},
+    "min_score": 8.0
+  }}
+}}
+
 What should be the next step?"""
 
             # Get model's response
@@ -499,6 +530,10 @@ What should be the next step?"""
                     if func_name == "extract_anime_info":
                         params = "{}"  # Force empty object for extract_anime_info
                     else:
+                        # Clean up any potential formatting issues
+                        params = re.sub(r'\s+', ' ', params)  # Replace multiple spaces with single space
+                        params = re.sub(r',\s*}', '}', params)  # Remove trailing commas
+                        params = re.sub(r',\s*]', ']', params)  # Remove trailing commas in arrays
                         params = json.loads(params)
                     
                     # Execute the function
